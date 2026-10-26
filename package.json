@@ -1,5 +1,5 @@
 {
-  "name": "llm-feature-review-demo",
+  "name": "ai-assistant-review-demo",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22.13" },

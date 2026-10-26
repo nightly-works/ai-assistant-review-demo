@@ -29,16 +29,16 @@ A model's output is untrusted input: anything that can reach the model, a custom
 **What**: `refund_order` is a tool the model can call, with no role check and no confirmation. Order notes written by customers are passed to the model when staff ask about an order.
 **Impact**: a customer asks the assistant to refund their order, and it does. Worse, a customer writes an instruction in their delivery note; when a staff member later asks the assistant to summarize that order, the model reads the note and refunds it. This is indirect prompt injection: the attacker never talks to the assistant the staff member uses.
 **Reproduced**: both, in test 2, flawed.
-**Fix**: the model can no longer change anything. It can propose a refund, which creates a pending request; staff approve it on a normal endpoint with a role check. The browser can send only user and assistant text, never tool results. The note is still shown to the model: what it can do with it is now harmless.
-**Verified**: the direct request reaches no refund tool, the planted note refunds nothing, and a customer cannot approve a request (test 2, fixed); a proposal approved by staff refunds the order once (normal use).
+**Fix**: the model can no longer change anything. For a customer it can propose a refund of their own paid order, which files one pending request marked as coming from the assistant; staff approve it on a normal endpoint with a role check, and only a paid order is refunded, once. Staff's assistant can only read orders. The browser sends only the user's own text, never assistant turns or tool results. The note is still shown to the model and can still steer it: at most it makes the model read an order the reader may see anyway, or file a request a person must review.
+**Verified**: the direct request reaches no refund tool, planted notes naming either refund tool neither refund nor file anything, and a customer cannot approve a request (test 2, fixed); a proposal approved by staff refunds the order once, duplicates and requests for refunded orders are refused, and malformed tool arguments find nothing (normal use).
 
 ### 3. Model and budget chosen by the browser, no limit on calls (high)
 
 **What**: `/api/chat` passes the request's `model` and `max_tokens` to the LLM call and counts nothing.
 **Impact**: any signed-in user, or a script with their token, runs the most expensive model with the largest output, as often as they like, on your API account.
 **Reproduced**: 60 calls asking for `largest-model` with 200,000 tokens all go through (test 3, flawed).
-**Fix**: model and token cap are constants on the server; each user gets 50 assistant calls a day, then 429; conversations are capped at 20 messages and 50 KB.
-**Verified**: the request's model and budget are ignored and the 51st call of the day is refused, while other users are unaffected (test 3, fixed).
+**Fix**: model and token cap are constants on the server; each user gets 50 model calls a day (a chat request can take several), then 429; conversations are capped at 20 messages of 4,000 characters and 50 KB.
+**Verified**: what reaches the model is the server's model and budget whatever the request asks, and the 51st model call of the day is refused while other users are unaffected (test 3, fixed); the caps answer 400 or 413 (normal use).
 
 ### 4. A discount code in the system prompt (medium)
 

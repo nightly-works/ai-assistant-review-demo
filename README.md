@@ -5,8 +5,8 @@ A proof piece for reviews of AI features added to web apps: chat assistants that
 | # | Flaw | Severity | Fix |
 |---|---|---|---|
 | 1 | The order tool runs with the server's rights: customers read others' orders and addresses | critical | tools built per request with the user's rights |
-| 2 | The model can refund, directly or through an instruction planted in an order note (indirect prompt injection) | critical | the model only proposes; staff approve with a role check |
-| 3 | The browser picks the model and the token budget; no limit on calls | high | server-side model, cap and daily quota |
+| 2 | The model can refund, directly or through an instruction planted in an order note (indirect prompt injection) | critical | the model only files a request; staff approve with a role check |
+| 3 | The browser picks the model and the token budget; no limit on calls | high | server-side model and cap, daily quota of model calls |
 | 4 | A staff discount code in the system prompt, readable by asking | medium | no secrets in prompts |
 
 Full write-up, as a client receives it: [REPORT.md](REPORT.md).

@@ -8,7 +8,8 @@ Be friendly. Use the tools to look up orders. You can propose a refund; staff de
 // The model and its limits are chosen here, never by the browser.
 const MODEL = 'small';
 const MAX_TOKENS = 500;
-const DAILY_CALLS = 50;
+const DAILY_MODEL_CALLS = 50;
+const MAX_STEPS = 5;
 
 export function createApp(db, { model = scriptedModel, today = () => new Date().toISOString().slice(0, 10) } = {}) {
   const app = express();
@@ -21,31 +22,46 @@ export function createApp(db, { model = scriptedModel, today = () => new Date().
     next();
   });
 
-  // Tools run with the signed-in user's rights, not the server's: the model can only reach
-  // what the user could reach through the normal screens. Nothing here changes data
-  // without a person deciding.
+  const isOrderId = (value) => Number.isInteger(value) && value > 0;
+
+  // Tools run with the signed-in user's rights, not the server's: the model reaches only
+  // what the user could reach on the normal screens, and nothing it calls changes data
+  // without a person deciding. Text the model reads (an order note) can still steer it,
+  // so each tool is also safe when called by someone else's instruction.
   function toolsFor(user) {
-    const visibleOrder = (id) =>
-      user.role === 'support'
-        ? db.prepare('SELECT id, user_id, item, amount_cents, address, note, status FROM orders WHERE id = ?').get(id)
-        : db.prepare('SELECT id, item, amount_cents, address, note, status FROM orders WHERE id = ? AND user_id = ?').get(id, user.id);
+    if (user.role === 'support') {
+      return {
+        get_order: ({ order_id }) =>
+          (isOrderId(order_id) && db.prepare('SELECT id, user_id, item, amount_cents, address, note, status FROM orders WHERE id = ?').get(order_id)) || { error: 'No such order' },
+      };
+    }
+    const ownOrder = (id) =>
+      isOrderId(id) ? db.prepare('SELECT id, item, amount_cents, address, note, status FROM orders WHERE id = ? AND user_id = ?').get(id, user.id) : undefined;
     return {
-      get_order: ({ order_id }) => visibleOrder(order_id) ?? { error: 'No such order' },
+      get_order: ({ order_id }) => ownOrder(order_id) ?? { error: 'No such order' },
+      // Files a request for staff, marked as coming from the assistant; one open request
+      // per order, and only for a paid order.
       propose_refund: ({ order_id }) => {
-        if (!visibleOrder(order_id)) return { error: 'No such order' };
+        const order = ownOrder(order_id);
+        if (!order) return { error: 'No such order' };
+        if (order.status !== 'paid') return { error: 'This order cannot be refunded' };
+        if (db.prepare("SELECT 1 FROM refund_requests WHERE order_id = ? AND status = 'pending'").get(order.id)) {
+          return { error: 'A refund request is already open for this order' };
+        }
         const { lastInsertRowid } = db
-          .prepare('INSERT INTO refund_requests (order_id, requested_by) VALUES (?, ?)')
-          .run(order_id, user.id);
+          .prepare("INSERT INTO refund_requests (order_id, requested_by, source) VALUES (?, ?, 'assistant')")
+          .run(order.id, user.id);
         return { pending_refund_request: Number(lastInsertRowid), note: 'A member of staff will review it.' };
       },
     };
   }
 
-  function overQuota(user) {
+  // Counts model calls, not HTTP requests: one chat request may take several steps.
+  function takeModelCall(user) {
     db.prepare(
       'INSERT INTO usage (user_id, day, calls) VALUES (?, ?, 1) ON CONFLICT (user_id, day) DO UPDATE SET calls = calls + 1'
     ).run(user.id, today());
-    return db.prepare('SELECT calls FROM usage WHERE user_id = ? AND day = ?').get(user.id, today()).calls > DAILY_CALLS;
+    return db.prepare('SELECT calls FROM usage WHERE user_id = ? AND day = ?').get(user.id, today()).calls <= DAILY_MODEL_CALLS;
   }
 
   app.post('/api/orders/:id/note', (req, res) => {
@@ -56,19 +72,18 @@ export function createApp(db, { model = scriptedModel, today = () => new Date().
 
   app.post('/api/chat', (req, res) => {
     const messages = req.body?.messages;
-    if (!Array.isArray(messages) || messages.length === 0 || messages.length > 20) {
-      return res.status(400).json({ error: 'Between 1 and 20 messages' });
+    // The browser sends the user's own words only. Assistant turns and tool results are
+    // produced here (a real app keeps the history on the server), so none can be forged.
+    if (!Array.isArray(messages) || messages.length === 0 || messages.length > 20
+      || !messages.every((m) => m?.role === 'user' && typeof m.content === 'string' && m.content.length <= 4000)) {
+      return res.status(400).json({ error: '1 to 20 user messages of up to 4,000 characters' });
     }
-    // Only the user's own turns come from the browser; tool results are produced here.
-    if (messages.some((m) => m.role !== 'user' && m.role !== 'assistant' || typeof m.content !== 'string')) {
-      return res.status(400).json({ error: 'Messages must be user or assistant text' });
-    }
-    if (overQuota(req.user)) return res.status(429).json({ error: 'Daily assistant limit reached' });
+    const convo = messages.map((m) => ({ role: 'user', content: m.content }));
 
     const tools = toolsFor(req.user);
-    const convo = [...messages];
     const calls = [];
-    for (let step = 0; step < 5; step++) {
+    for (let step = 0; step < MAX_STEPS; step++) {
+      if (!takeModelCall(req.user)) return res.status(429).json({ error: 'Daily assistant limit reached' });
       const reply = model({ system: SYSTEM, messages: convo, model: MODEL, max_tokens: MAX_TOKENS });
       if (!reply.tool_call) return res.json({ reply: reply.content, tool_calls: calls, model: MODEL, max_tokens: MAX_TOKENS });
       const tool = tools[reply.tool_call.name];
@@ -79,14 +94,22 @@ export function createApp(db, { model = scriptedModel, today = () => new Date().
     res.json({ reply: 'Sorry, I could not finish.', tool_calls: calls });
   });
 
-  // Refunds are decided by staff, in a normal screen, with a role check.
+  // Refunds are decided by staff, on a normal screen, with a role check; the order must
+  // still be paid, so a refund is never applied twice.
   app.post('/api/refund-requests/:id/approve', (req, res) => {
     if (req.user.role !== 'support') return res.status(403).json({ error: 'Staff only' });
     const request = db.prepare("SELECT * FROM refund_requests WHERE id = ? AND status = 'pending'").get(req.params.id);
     if (!request) return res.status(404).json({ error: 'No pending request' });
-    db.prepare("UPDATE refund_requests SET status = 'approved' WHERE id = ?").run(request.id);
-    db.prepare("UPDATE orders SET status = 'refunded' WHERE id = ?").run(request.order_id);
-    res.json({ refunded: request.order_id });
+    const refunded = db.prepare("UPDATE orders SET status = 'refunded' WHERE id = ? AND status = 'paid'").run(request.order_id);
+    db.prepare('UPDATE refund_requests SET status = ? WHERE id = ?').run(refunded.changes === 1 ? 'approved' : 'void', request.id);
+    if (refunded.changes !== 1) return res.status(409).json({ error: 'Order is not in a refundable state' });
+    res.json({ refunded: request.order_id, source: request.source });
+  });
+
+  // Oversized or malformed bodies answer in JSON like the rest of the API.
+  app.use((err, req, res, next) => {
+    const status = err.status >= 400 && err.status < 500 ? err.status : 500;
+    res.status(status).json({ error: status === 413 ? 'Request too large' : status === 500 ? 'Server error' : 'Bad request' });
   });
 
   return app;

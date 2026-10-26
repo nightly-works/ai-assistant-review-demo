@@ -7,7 +7,7 @@ export function openDb() {
     CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, item TEXT, amount_cents INTEGER,
       address TEXT, note TEXT, status TEXT DEFAULT 'paid');
     CREATE TABLE usage (user_id INTEGER, day TEXT, calls INTEGER, PRIMARY KEY (user_id, day));
-    CREATE TABLE refund_requests (id INTEGER PRIMARY KEY, order_id INTEGER, requested_by INTEGER, status TEXT DEFAULT 'pending');
+    CREATE TABLE refund_requests (id INTEGER PRIMARY KEY, order_id INTEGER, requested_by INTEGER, source TEXT, status TEXT DEFAULT 'pending');
   `);
   db.exec(`
     INSERT INTO users VALUES (1, 'Alice', 'customer', 'tok-alice'), (2, 'Bob', 'customer', 'tok-bob'),
