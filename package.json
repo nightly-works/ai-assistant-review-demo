@@ -1,0 +1,12 @@
+{
+  "name": "llm-feature-review-demo",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "test": "node --test --test-timeout=20000 --disable-warning=ExperimentalWarning tests/*.test.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
